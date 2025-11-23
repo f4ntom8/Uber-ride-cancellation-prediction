@@ -16,7 +16,7 @@ def load_model():
 model = load_model()
 
 # ----------------------------
-# Encoding Maps (MUST match training)
+# Label Encoding Maps
 # ----------------------------
 status_map = {
     "Completed": 0,
@@ -38,31 +38,30 @@ payment_map = {
 # ----------------------------
 def preprocess(input_data):
 
-    # Missing-value flags
-    input_data["missing_booking_value"] = int(input_data["Booking Value"] in [None, ""])
-    input_data["missing_payment_method"] = int(input_data["Payment Method"] in [None, ""])
-    input_data["missing_driver_rating"] = int(input_data["Driver Ratings"] in [None, ""])
-    input_data["missing_customer_rating"] = int(input_data["Customer Rating"] in [None, ""])
+    # Missing flags
+    input_data["missing_booking_value"] = 1 if input_data["Booking Value"] in [None, ""] else 0
+    input_data["missing_payment_method"] = 1 if input_data["Payment Method"] in [None, ""] else 0
+    input_data["missing_driver_rating"] = 1 if input_data["Driver Ratings"] in [None, ""] else 0
+    input_data["missing_customer_rating"] = 1 if input_data["Customer Rating"] in [None, ""] else 0
 
-    # Replace missing with zero
     for col in ["Booking Value", "Customer Rating", "Driver Ratings"]:
         if input_data[col] in [None, ""]:
             input_data[col] = 0
 
-    # Binary flags for booking status
+    # Binary cancellation flags
     status = input_data["Booking Status"]
-    input_data["is_cancelled_customer"] = int(status == "Cancelled by Customer")
-    input_data["is_cancelled_driver"] = int(status == "Cancelled by Driver")
-    input_data["is_incomplete"] = int(status == "Incomplete")
+    input_data["is_cancelled_customer"] = 1 if status == "Cancelled by Customer" else 0
+    input_data["is_cancelled_driver"] = 1 if status == "Cancelled by Driver" else 0
+    input_data["is_incomplete"] = 1 if status == "Incomplete" else 0
 
     # Extract hour
     input_data["hour"] = input_data["Pickup Time"].hour
 
-    # Encode categorical values
+    # Label encode
     input_data["Booking Status"] = status_map[input_data["Booking Status"]]
     input_data["Payment Method"] = payment_map[input_data["Payment Method"]]
 
-    # Feature order
+    # Final order
     ordered = [
         'Avg VTAT', 'Ride Distance', 'Booking Value',
         'Customer Rating', 'Driver Ratings',
@@ -73,108 +72,74 @@ def preprocess(input_data):
         'hour'
     ]
 
-    return pd.DataFrame([[input_data[col] for col in ordered]], columns=ordered)
+    X = pd.DataFrame([[input_data[col] for col in ordered]], columns=ordered)
+    return X
 
 
 # ----------------------------
 # Streamlit UI
 # ----------------------------
-st.set_page_config(page_title="Uber Cancellation Predictor", page_icon="🚕", layout="wide")
+st.title("🚕 Uber Ride Cancellation Prediction Model")
+st.write("Provide ride details below to estimate cancellation probability.")
 
-st.markdown(
-    """
-    <h1 style='text-align:center;'>🚕 Uber Ride Cancellation Prediction</h1>
-    <p style='text-align:center;font-size:18px;color:#444;'>
-        Enter ride details below to estimate the probability of cancellation.
-    </p>
-    """,
-    unsafe_allow_html=True
+# Inputs
+avg_vtat = st.number_input("Avg VTAT", min_value=0.0, max_value=120.0)
+ride_distance = st.number_input("Ride Distance (KM)", min_value=0.0, max_value=500.0)
+booking_value = st.number_input("Booking Value", min_value=0.0, max_value=10000.0)
+customer_rating = st.number_input("Customer Rating", min_value=0.0, max_value=5.0)
+driver_ratings = st.number_input("Driver Ratings", min_value=0.0, max_value=5.0)
+
+booking_status = st.selectbox(
+    "Booking Status",
+    ["Completed", "Cancelled by Customer", "Cancelled by Driver", "Incomplete"]
 )
 
-tab1, tab2 = st.tabs(["🔮 Prediction", "ℹ️ Model Info"])
+payment_method = st.selectbox(
+    "Payment Method",
+    ["Cash", "Card", "Wallet", "UPI", "Other"]
+)
 
-# ----------------------------------
-# TAB 1 — Prediction Interface
-# ----------------------------------
-with tab1:
+# ----------------------------
+# FIX: Time input no longer resets
+# ----------------------------
+if "default_pickup_time" not in st.session_state:
+    st.session_state.default_pickup_time = datetime.now().time()
 
-    st.subheader("📋 Enter Ride Information")
+pickup_time = st.time_input(
+    "Pickup Time",
+    value=st.session_state.default_pickup_time
+)
 
-    col1, col2, col3 = st.columns(3)
+pickup_datetime = datetime.combine(datetime.today(), pickup_time)
 
-    with col1:
-        avg_vtat = st.number_input("Avg VTAT", min_value=0.0, max_value=120.0)
-        booking_value = st.number_input("Booking Value", min_value=0.0, max_value=10000.0)
-        customer_rating = st.number_input("Customer Rating", min_value=0.0, max_value=5.0)
+# ----------------------------
+# Prediction Button
+# ----------------------------
+if st.button("Predict"):
+    data = {
+        "Avg VTAT": avg_vtat,
+        "Ride Distance": ride_distance,
+        "Booking Value": booking_value,
+        "Customer Rating": customer_rating,
+        "Driver Ratings": driver_ratings,
+        "Booking Status": booking_status,
+        "Payment Method": payment_method,
+        "Pickup Time": pickup_datetime
+    }
 
-    with col2:
-        ride_distance = st.number_input("Ride Distance (km)", min_value=0.0, max_value=500.0)
-        driver_ratings = st.number_input("Driver Ratings", min_value=0.0, max_value=5.0)
-        booking_status = st.selectbox(
-            "Booking Status",
-            ["Completed", "Cancelled by Customer", "Cancelled by Driver", "Incomplete"]
-        )
+    X = preprocess(data)
+    prob = model.predict_proba(X)[0][1]
+    pred = model.predict(X)[0]
 
-    with col3:
-        payment_method = st.selectbox(
-            "Payment Method",
-            ["Cash", "Card", "Wallet", "UPI", "Other"]
-        )
-        pickup_time = st.time_input("Pickup Time", value=datetime.now().time())
+    st.subheader("🧾 Prediction Results")
+    st.write(f"**Cancellation Probability:** {prob:.2%}")
 
-    pickup_datetime = datetime.combine(datetime.today(), pickup_time)
-
-    st.markdown("---")
-
-    if st.button("🚀 Predict Cancellation", use_container_width=True):
-        data = {
-            "Avg VTAT": avg_vtat,
-            "Ride Distance": ride_distance,
-            "Booking Value": booking_value,
-            "Customer Rating": customer_rating,
-            "Driver Ratings": driver_ratings,
-            "Booking Status": booking_status,
-            "Payment Method": payment_method,
-            "Pickup Time": pickup_datetime
-        }
-
-        X = preprocess(data)
-        prob = model.predict_proba(X)[0][1]   # Probability of COMPLETED
-        pred = model.predict(X)[0]            # 1 = completed, 0 = cancelled
-
-        st.subheader("📊 Prediction Results")
-
-        # ------------------------
-        # Gauge-style probability
-        # ------------------------
-        st.metric(
-            label="Probability Ride Will Be Completed",
-            value=f"{prob:.2%}"
-        )
-
-        # Corrected prediction logic
-        if pred == 1:
-            st.success("✅ Low risk — booking likely to complete.")
-        else:
-            st.error("⚠️ High chance of cancellation.")
-
-# ----------------------------------
-# TAB 2 — Model Info
-# ----------------------------------
-with tab2:
-    st.subheader("ℹ️ About This Model")
-    st.write("""
-    This Uber ride cancellation prediction model analyzes:
-    - Customer & driver ratings  
-    - Travel distance  
-    - VTAT (Vehicle Time Arrival Time)  
-    - Payment method  
-    - Booking status  
-    - Time of day  
-      
-    The model is trained using **XGBoost** and outputs:  
-    - **Probability of ride being completed**  
-    - A binary prediction (completed vs cancelled)  
-    """)
-
-    st.success("Prediction logic fixed: Model now interprets 1 = Completed, 0 = Cancelled correctly.")
+    # -----------------------
+    # FIX: Corrected logic
+    # pred == 1 → Completed
+    # pred == 0 → Cancelled
+    # -----------------------
+    if pred == 0:
+        st.error("⚠️ High chance of cancellation.")
+    else:
+        st.success("✅ Low risk — booking likely to complete.")
